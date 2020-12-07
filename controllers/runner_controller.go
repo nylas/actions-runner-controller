@@ -19,7 +19,7 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"reflect"
+	"github.com/summerwind/actions-runner-controller/hash"
 	"strings"
 
 	"github.com/go-logr/logr"
@@ -39,6 +39,8 @@ import (
 const (
 	containerName = "runner"
 	finalizerName = "runner.actions.summerwind.dev"
+
+	runnerHashAnnotationKey = "runner-hash"
 )
 
 // RunnerReconciler reconciles a Runner object
@@ -198,7 +200,10 @@ func (r *RunnerReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 			return ctrl.Result{}, nil
 		}
 
-		if !runnerBusy && (!reflect.DeepEqual(pod.Spec.Containers[0].Env, newPod.Spec.Containers[0].Env) || pod.Spec.Containers[0].Image != newPod.Spec.Containers[0].Image) {
+		curHash := pod.Annotations[runnerHashAnnotationKey]
+		newHash := newPod.Annotations[runnerHashAnnotationKey]
+
+		if !runnerBusy && curHash != newHash {
 			restart = true
 		}
 
@@ -357,12 +362,25 @@ func (r *RunnerReconciler) newPod(runner v1alpha1.Runner) (corev1.Pod, error) {
 	}
 
 	env = append(env, runner.Spec.Env...)
+
+	annotations := map[string]string{}
+
+	for k, v := range runner.Annotations {
+		annotations[k] = v
+	}
+
+	// This implies that we recreate the runner pod whenever the runner has changes in:
+	// - metadata.labels
+	// - metadata.annotations
+	// - metadata.spec (including image, env, organization, repository, group, token, and so on)
+	annotations[runnerHashAnnotationKey] = hash.FNVHashStringObjects(runner.Labels, runner.Annotations, runner.Spec)
+
 	pod := corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        runner.Name,
 			Namespace:   runner.Namespace,
 			Labels:      runner.Labels,
-			Annotations: runner.Annotations,
+			Annotations: annotations,
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy: "OnFailure",
